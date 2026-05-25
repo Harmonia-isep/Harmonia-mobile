@@ -1,0 +1,14 @@
+.env
+.env.*
+session.json
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+.idea/
+.vscode/

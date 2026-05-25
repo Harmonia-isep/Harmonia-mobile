@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -E \"\\\\.\\(txt|cfg|ini|toml|yaml|yml\\)$\")",
+      "Bash(xargs ls *)",
+      "WebFetch(domain:harmonia-api-n8zp.onrender.com)"
+    ]
+  }
+}

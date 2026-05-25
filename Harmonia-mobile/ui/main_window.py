@@ -1,32 +1,32 @@
 from PySide6.QtWidgets import QMainWindow, QStackedWidget, QLabel, QWidget
-from PySide6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QPoint
-from PySide6.QtGui import QFont
+from PySide6.QtCore import Qt, QTimer
 
 from ui.library_screen import LibraryScreen
 from ui.track_detail_screen import TrackDetailScreen
+from ui import theme
 
 
 # ── Toast notification ─────────────────────────────────────────────────────
 
 class Toast(QLabel):
     """
-    A small overlay banner that slides in at the bottom of the window,
-    stays for `duration_ms` milliseconds, then fades out and hides itself.
+    Small overlay banner that slides in at the bottom of the window,
+    stays for `duration_ms` milliseconds, then hides itself.
     """
 
     def __init__(self, parent: QWidget):
         super().__init__(parent)
         self.setAlignment(Qt.AlignCenter)
         self.setWordWrap(True)
-        self.setFont(QFont("Segoe UI", 10))
-        self.setStyleSheet("""
-            QLabel {
-                color: #d4f1e4;
-                background: #0d3d26;
-                border: 1px solid #34d399;
-                border-radius: 12px;
+        self.setStyleSheet(f"""
+            QLabel {{
+                color: {theme.TEXT_PRIMARY};
+                background: rgba(50, 215, 75, 18);
+                border: 1px solid {theme.SUCCESS};
+                border-radius: {theme.RADIUS_MD}px;
                 padding: 10px 20px;
-            }
+                font-size: 13px;
+            }}
         """)
         self.hide()
 
@@ -35,12 +35,9 @@ class Toast(QLabel):
         self._reposition()
         self.show()
         self.raise_()
-
-        # Auto-hide after duration
         QTimer.singleShot(duration_ms, self.hide)
 
     def _reposition(self):
-        """Centre horizontally, sit 24 px above the bottom of the parent."""
         if not self.parent():
             return
         parent_w = self.parent().width()
@@ -60,23 +57,39 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Harmonia")
         self.setFixedSize(390, 760)
-        self.setStyleSheet("background-color: #13131f;")
+        self.setStyleSheet(f"""
+            QMainWindow {{
+                background-color: {theme.BG_PRIMARY};
+            }}
+            QScrollBar:vertical {{
+                width: 6px;
+                background: transparent;
+                border: none;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {theme.TEXT_TERTIARY};
+                border-radius: 3px;
+                min-height: 20px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: {theme.TEXT_SECONDARY};
+            }}
+            QScrollBar::add-line:vertical,
+            QScrollBar::sub-line:vertical {{
+                height: 0;
+            }}
+        """)
 
-        # Central stacked widget
         self.stack = QStackedWidget()
         self.setCentralWidget(self.stack)
 
-        # Screens
         self.library = LibraryScreen(on_track_select=self.show_detail)
         self.detail  = TrackDetailScreen(on_back=self.show_library)
 
         self.stack.addWidget(self.library)   # index 0
         self.stack.addWidget(self.detail)    # index 1
 
-        # Toast (lives above the stack, parented to the main widget)
         self._toast = Toast(self.centralWidget())
-
-        # Wire up the connected signal → show toast
         self.library.connected.connect(self._on_connected)
 
     # ── Navigation ─────────────────────────────────────────────────────────

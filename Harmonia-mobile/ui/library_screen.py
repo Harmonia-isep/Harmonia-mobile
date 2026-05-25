@@ -8,9 +8,10 @@ from PySide6.QtGui import QIntValidator
 
 from data.api_client import (
     get_or_create_user_id, get_user_tracks, normalize_track,
-    upload_track, delete_track
+    upload_track, delete_track, trigger_analysis
 )
 from data.mock_data import MOCK_TRACKS
+from ui import theme
 
 PENDING_STATUSES = {"pending", "queued", "analyzing", "processing"}
 
@@ -53,8 +54,15 @@ class UploadWorker(QThread):
     def run(self):
         try:
             user_id = get_or_create_user_id()
-            raw = upload_track(user_id, self.file_path)
-            self.finished.emit(normalize_track(raw))
+            raw   = upload_track(user_id, self.file_path)
+            track = normalize_track(raw)
+            # Kick off analysis immediately; mark track as pending in the UI
+            try:
+                trigger_analysis(track["id"])
+                track["status"] = "pending"
+            except Exception as exc:
+                print(f"DEBUG: trigger_analysis failed -> {exc}")
+            self.finished.emit(track)
         except Exception as exc:
             self.error.emit(str(exc))
 
@@ -73,13 +81,10 @@ class DeleteWorker(QThread):
 # ── Pulsing badge ──────────────────────────────────────────────────────────
 
 class PulseBadge(QLabel):
-    _DIM    = "#3d2a80"
-    _BRIGHT = "#7c3aed"
-
     def __init__(self, text: str, pending: bool = False):
         super().__init__(text)
         self.setAlignment(Qt.AlignCenter)
-        self.setFixedWidth(86)      # fixed width prevents horizontal overflow
+        self.setFixedWidth(86)
         self._pending = pending
         self._bright  = False
         self._set_style(False)
@@ -94,8 +99,12 @@ class PulseBadge(QLabel):
         self._set_style(self._bright)
 
     def _set_style(self, bright: bool):
-        bg  = self._BRIGHT if bright else self._DIM
-        col = "#e9d5ff"    if bright else "#a78bfa"
+        if bright:
+            bg  = theme.WARNING
+            col = theme.BG_PRIMARY
+        else:
+            bg  = "rgba(255, 159, 10, 25)"   # dim warning glow
+            col = theme.WARNING
         self.setStyleSheet(f"""
             color: {col}; background: {bg};
             border-radius: 6px; padding: 3px 6px;
@@ -113,11 +122,11 @@ class TrackCard(QFrame):
         self.track    = track
         self._pending = _is_pending(track)
         self.setFrameShape(QFrame.NoFrame)
-        self.setFixedHeight(56)     # compact fixed height — one card = 56 px
+        self.setFixedHeight(56)
         self.setCursor(Qt.PointingHandCursor)
-        self.setStyleSheet("""
-            QFrame { background: #1e1e2e; border-radius: 8px; }
-            QFrame:hover { background: #252540; }
+        self.setStyleSheet(f"""
+            QFrame {{ background: {theme.BG_SECONDARY}; border-radius: {theme.RADIUS_SM}px; }}
+            QFrame:hover {{ background: {theme.BG_TERTIARY}; }}
         """)
         self._build(on_click)
 
@@ -128,7 +137,7 @@ class TrackCard(QFrame):
 
         icon = QLabel("♪")
         icon.setFixedWidth(22)
-        icon.setStyleSheet("color: #6d6d8a; font-size: 18px;")
+        icon.setStyleSheet(f"color: {theme.TEXT_TERTIARY}; font-size: 18px;")
         row.addWidget(icon)
 
         info = QVBoxLayout()
@@ -136,24 +145,24 @@ class TrackCard(QFrame):
         info.setContentsMargins(0, 0, 0, 0)
 
         title = QLabel(self.track["title"])
-        title.setStyleSheet("color: #e2e2f0; font-weight: bold; font-size: 13px;")
+        title.setStyleSheet(f"color: {theme.TEXT_PRIMARY}; font-weight: bold; font-size: 13px;")
         title.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
         artist = QLabel(self.track["artist"])
-        artist.setStyleSheet("color: #6d6d8a; font-size: 11px;")
+        artist.setStyleSheet(f"color: {theme.TEXT_SECONDARY}; font-size: 11px;")
         artist.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
         info.addWidget(title)
         info.addWidget(artist)
-        row.addLayout(info, stretch=1)  # stretch absorbs spare space
+        row.addLayout(info, stretch=1)
 
         if self._pending:
             badge = PulseBadge("Analyzing…", pending=True)
         else:
             bpm = self.track["bpm"]
             badge = PulseBadge(f"{bpm} BPM" if bpm != "—" else "—", pending=False)
-            badge.setStyleSheet("""
-                color: #a78bfa; background: #2d1b69;
+            badge.setStyleSheet(f"""
+                color: {theme.INFO}; background: {theme.BG_ELEVATED};
                 border-radius: 6px; padding: 3px 6px;
                 font-size: 11px; font-weight: bold;
             """)
@@ -162,12 +171,12 @@ class TrackCard(QFrame):
         del_btn = QPushButton("✕")
         del_btn.setFixedSize(24, 24)
         del_btn.setToolTip("Delete track")
-        del_btn.setStyleSheet("""
-            QPushButton {
-                background: transparent; color: #444; border: none;
+        del_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; color: {theme.TEXT_TERTIARY}; border: none;
                 font-size: 12px; border-radius: 4px;
-            }
-            QPushButton:hover { color: #f87171; background: #2d1010; }
+            }}
+            QPushButton:hover {{ color: {theme.ERROR}; background: rgba(255, 69, 58, 25); }}
         """)
         del_btn.clicked.connect(lambda: self.delete_requested.emit(self.track["id"]))
         row.addWidget(del_btn)
@@ -195,6 +204,9 @@ class LibraryScreen(QWidget):
     # ── UI ─────────────────────────────────────────────────────────────────
 
     def _setup_ui(self):
+        self.setObjectName("LibraryScreen")
+        self.setStyleSheet(f"#LibraryScreen {{ background: {theme.BG_PRIMARY}; }}")
+
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 14, 14, 10)
         root.setSpacing(6)
@@ -202,11 +214,11 @@ class LibraryScreen(QWidget):
         # Header row
         hdr = QHBoxLayout()
         ttl = QLabel("🎧  My Library")
-        ttl.setStyleSheet("color: white; font-size: 20px; font-weight: bold;")
+        ttl.setStyleSheet(f"color: {theme.TEXT_PRIMARY}; font-size: 20px; font-weight: bold;")
         hdr.addWidget(ttl)
         hdr.addStretch()
-        self._refresh_btn = self._mk_btn("↻", "#a78bfa", self._load_tracks, "Refresh")
-        add_btn           = self._mk_btn("+", "#34d399", self._add_track,   "Upload track")
+        self._refresh_btn = self._mk_btn("↻", theme.TEXT_SECONDARY, self._load_tracks, "Refresh")
+        add_btn           = self._mk_btn("+", theme.ACCENT,          self._add_track,   "Upload track")
         hdr.addWidget(self._refresh_btn)
         hdr.addWidget(add_btn)
         root.addLayout(hdr)
@@ -215,13 +227,13 @@ class LibraryScreen(QWidget):
         self._search = QLineEdit()
         self._search.setPlaceholderText("Search by title or artist…")
         self._search.setFixedHeight(38)
-        self._search.setStyleSheet("""
-            QLineEdit {
-                background: #1a1a2e; color: white;
-                border: 1px solid #2e2e4a; border-radius: 19px;
+        self._search.setStyleSheet(f"""
+            QLineEdit {{
+                background: {theme.BG_SECONDARY}; color: {theme.TEXT_PRIMARY};
+                border: 1px solid {theme.BORDER}; border-radius: 19px;
                 padding: 0 14px; font-size: 13px;
-            }
-            QLineEdit:focus { border-color: #7c3aed; }
+            }}
+            QLineEdit:focus {{ border-color: {theme.ACCENT}; }}
         """)
         self._search.textChanged.connect(self._apply_filters)
         root.addWidget(self._search)
@@ -230,38 +242,40 @@ class LibraryScreen(QWidget):
         frow = QHBoxLayout()
         frow.setSpacing(6)
 
-        for lbl_text in ("BPM:",):
-            lbl = QLabel(lbl_text)
-            lbl.setStyleSheet("color: #555; font-size: 11px;")
-            frow.addWidget(lbl)
+        bpm_lbl = QLabel("BPM:")
+        bpm_lbl.setStyleSheet(f"color: {theme.TEXT_TERTIARY}; font-size: 11px;")
+        frow.addWidget(bpm_lbl)
 
         self._bpm_min = self._mk_num_input("min")
         self._bpm_max = self._mk_num_input("max")
         self._bpm_min.textChanged.connect(self._apply_filters)
         self._bpm_max.textChanged.connect(self._apply_filters)
         frow.addWidget(self._bpm_min)
-        sep = QLabel("–"); sep.setStyleSheet("color: #444; font-size: 11px;")
+
+        sep = QLabel("–")
+        sep.setStyleSheet(f"color: {theme.TEXT_TERTIARY}; font-size: 11px;")
         frow.addWidget(sep)
         frow.addWidget(self._bpm_max)
 
         key_lbl = QLabel("Key:")
-        key_lbl.setStyleSheet("color: #555; font-size: 11px;")
+        key_lbl.setStyleSheet(f"color: {theme.TEXT_TERTIARY}; font-size: 11px;")
         frow.addWidget(key_lbl)
 
         self._key_combo = QComboBox()
         self._key_combo.addItems(KEYS)
         self._key_combo.setFixedHeight(26)
-        self._key_combo.setStyleSheet("""
-            QComboBox {
-                background: #1a1a2e; color: #a78bfa;
-                border: 1px solid #2e2e4a; border-radius: 6px;
+        self._key_combo.setStyleSheet(f"""
+            QComboBox {{
+                background: {theme.BG_SECONDARY}; color: {theme.TEXT_PRIMARY};
+                border: 1px solid {theme.BORDER}; border-radius: {theme.RADIUS_SM}px;
                 padding: 0 6px; font-size: 11px;
-            }
-            QComboBox::drop-down { border: none; }
-            QComboBox QAbstractItemView {
-                background: #1a1a2e; color: white;
-                selection-background-color: #3d2a80;
-            }
+            }}
+            QComboBox::drop-down {{ border: none; }}
+            QComboBox QAbstractItemView {{
+                background: {theme.BG_SECONDARY}; color: {theme.TEXT_PRIMARY};
+                selection-background-color: {theme.ACCENT};
+                selection-color: {theme.BG_PRIMARY};
+            }}
         """)
         self._key_combo.currentTextChanged.connect(self._apply_filters)
         frow.addWidget(self._key_combo, stretch=1)
@@ -269,17 +283,20 @@ class LibraryScreen(QWidget):
 
         # Status label
         self._status = QLabel("Connecting…")
-        self._status.setStyleSheet("color: #555; font-size: 11px;")
+        self._status.setStyleSheet(f"color: {theme.TEXT_SECONDARY}; font-size: 11px;")
         root.addWidget(self._status)
 
-        # Scroll area — horizontal scroll OFF to prevent card overflow
+        # Scroll area
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        scroll.viewport().setStyleSheet(f"background: {theme.BG_PRIMARY};")
 
         self._list_widget = QWidget()
+        self._list_widget.setObjectName("TrackList")
+        self._list_widget.setStyleSheet(f"#TrackList {{ background: {theme.BG_PRIMARY}; }}")
         self._list_layout = QVBoxLayout(self._list_widget)
         self._list_layout.setSpacing(4)
         self._list_layout.setContentsMargins(0, 0, 4, 0)
@@ -293,11 +310,11 @@ class LibraryScreen(QWidget):
         btn.setToolTip(tip)
         btn.setStyleSheet(f"""
             QPushButton {{
-                background: #1a1a2e; color: {color};
-                border: 1px solid {color}; border-radius: 8px;
+                background: {theme.BG_SECONDARY}; color: {color};
+                border: 1px solid {color}; border-radius: {theme.RADIUS_SM}px;
                 font-size: 17px; font-weight: bold;
             }}
-            QPushButton:hover {{ background: {color}; color: #0d0d1a; }}
+            QPushButton:hover {{ background: {color}; color: {theme.BG_PRIMARY}; }}
             QPushButton:disabled {{ opacity: 0.3; }}
         """)
         btn.clicked.connect(slot)
@@ -308,13 +325,13 @@ class LibraryScreen(QWidget):
         w.setPlaceholderText(placeholder)
         w.setFixedSize(40, 26)
         w.setValidator(QIntValidator(0, 999))
-        w.setStyleSheet("""
-            QLineEdit {
-                background: #1a1a2e; color: white;
-                border: 1px solid #2e2e4a; border-radius: 6px;
+        w.setStyleSheet(f"""
+            QLineEdit {{
+                background: {theme.BG_SECONDARY}; color: {theme.TEXT_PRIMARY};
+                border: 1px solid {theme.BORDER}; border-radius: {theme.RADIUS_SM}px;
                 padding: 0 4px; font-size: 11px;
-            }
-            QLineEdit:focus { border-color: #7c3aed; }
+            }}
+            QLineEdit:focus {{ border-color: {theme.ACCENT}; }}
         """)
         return w
 
@@ -451,7 +468,7 @@ class LibraryScreen(QWidget):
         if not tracks:
             empty = QLabel("No tracks found")
             empty.setAlignment(Qt.AlignCenter)
-            empty.setStyleSheet("color: #444; font-size: 13px; padding: 20px;")
+            empty.setStyleSheet(f"color: {theme.TEXT_TERTIARY}; font-size: 13px; padding: 20px;")
             self._list_layout.insertWidget(0, empty)
             return
 

@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useMemo } from 'react'
 import {
   View, Text, TextInput, TouchableOpacity, FlatList, StyleSheet,
-  Alert, ActivityIndicator, SafeAreaView, StatusBar, Platform,
+  Alert, ActivityIndicator, SafeAreaView, StatusBar, Platform, Modal,
 } from 'react-native'
 import * as DocumentPicker from 'expo-document-picker'
 import * as FileSystem from 'expo-file-system'
@@ -38,6 +38,15 @@ export default function LibraryScreen() {
   const [isUploading, setIsUploading] = useState(false)
   const [isExporting, setIsExporting] = useState(false)
 
+  // Upload form modal
+  const [showUploadForm, setShowUploadForm] = useState(false)
+  const [pendingAsset,   setPendingAsset]   = useState<{
+    uri: string; name: string; mimeType: string; file?: File
+  } | null>(null)
+  const [formTitle,  setFormTitle]  = useState('')
+  const [formArtist, setFormArtist] = useState('')
+  const [formAlbum,  setFormAlbum]  = useState('')
+
   useFocusEffect(useCallback(() => { loadTracks() }, [loadTracks]))
 
   // Alert.alert button callbacks are no-ops on React Native Web; use window.alert instead.
@@ -60,19 +69,28 @@ export default function LibraryScreen() {
 
   // ── UC01: Upload ──────────────────────────────────────────────────────
 
+  // Mirrors the web Upload.js parseFilename: "Artist - Title.mp3" → { artist, title }
+  function parseFilename(filename: string): { title: string; artist: string } {
+    const nameNoExt = filename.replace(/\.[^.]+$/, '').replace(/_/g, ' ')
+    const parts = nameNoExt.split(' - ')
+    if (parts.length >= 2) {
+      return { artist: parts[0].trim(), title: parts.slice(1).join(' - ').trim() }
+    }
+    return { artist: '', title: nameNoExt.trim() }
+  }
+
+  // Step 1 — open file picker, then show the metadata form
   async function handleUpload() {
     let result
     try {
       result = await DocumentPicker.getDocumentAsync({
         type: ['audio/mpeg', 'audio/wav', 'audio/x-wav', 'audio/*'],
-        // copyToCacheDirectory is native-only and breaks the web picker when set
         ...(Platform.OS !== 'web' && { copyToCacheDirectory: true }),
       })
     } catch (e: any) {
       nativeAlert('Picker Error', e.message ?? 'Could not open the file picker.')
       return
     }
-
     if (result.canceled || !result.assets?.length) return
 
     const asset = result.assets[0]
@@ -82,18 +100,44 @@ export default function LibraryScreen() {
       return
     }
 
+    // Pre-fill form from filename — same logic as the web Upload component
+    const { title, artist } = parseFilename(asset.name)
+    setPendingAsset({
+      uri:      asset.uri,
+      name:     asset.name,
+      mimeType: asset.mimeType ?? 'audio/mpeg',
+      file:     Platform.OS === 'web' ? (asset as any).file : undefined,
+    })
+    setFormTitle(title)
+    setFormArtist(artist)
+    setFormAlbum('')
+    setShowUploadForm(true)
+  }
+
+  // Step 2 — user confirms the metadata form
+  async function handleUploadConfirm() {
+    if (!pendingAsset) return
+    if (!formTitle.trim()) {
+      nativeAlert('Missing Title', 'Please enter a track title.')
+      return
+    }
+    setShowUploadForm(false)
     setIsUploading(true)
     try {
-      // On web, expo-document-picker exposes the real File object on asset.file.
-      // On native, we pass the URI and let the native fetch handle it.
-      const fileBlob = Platform.OS === 'web' ? (asset as any).file as File : undefined
-      const track = await uploadTrack(asset.uri, asset.name, asset.mimeType ?? 'audio/mpeg', fileBlob)
+      const track = await uploadTrack(
+        pendingAsset.uri,
+        pendingAsset.name,
+        pendingAsset.mimeType,
+        { title: formTitle.trim(), artist: formArtist.trim(), album: formAlbum.trim() },
+        pendingAsset.file,
+      )
       setTracks(prev => [track, ...prev])
-      nativeAlert('Uploaded!', `"${track.title}" is queued for analysis.`)
+      nativeAlert('Uploaded!', `"${track.title}" added to your library.`)
     } catch (e: any) {
       nativeAlert('Upload Failed', e.message ?? 'Could not upload the file.')
     } finally {
       setIsUploading(false)
+      setPendingAsset(null)
     }
   }
 
@@ -244,7 +288,9 @@ export default function LibraryScreen() {
                   <Ionicons name="musical-note" size={18} color={theme.TEXT_TERTIARY} style={s.cardIcon} />
                   <View style={{ flex: 1 }}>
                     <Text style={s.cardTitle} numberOfLines={1}>{item.title}</Text>
-                    <Text style={s.cardArtist} numberOfLines={1}>{item.artist}</Text>
+                    <Text style={s.cardArtist} numberOfLines={1}>
+                      {item.artist}{item.album ? ` · ${item.album}` : ''}
+                    </Text>
                   </View>
                   {(item.status?.toLowerCase().includes('analyz') && item.status !== 'analyzed') || item.status === 'pending'
                     ? <View style={s.pendingBadge}><Text style={s.pendingTxt}>Analyzing…</Text></View>
@@ -260,6 +306,67 @@ export default function LibraryScreen() {
           )
         }
       </View>
+
+      {/* ── Upload metadata form ─────────────────────────────────────── */}
+      <Modal
+        visible={showUploadForm}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowUploadForm(false)}
+      >
+        <View style={s.overlay}>
+          <View style={s.uploadModal}>
+            <Text style={s.uploadModalTitle}>Track Details</Text>
+            <Text style={s.uploadModalSub}>
+              {pendingAsset?.name ?? ''}
+            </Text>
+
+            <Text style={s.fieldLabel}>Title *</Text>
+            <TextInput
+              style={s.fieldInput}
+              placeholder="Track title"
+              placeholderTextColor={theme.TEXT_TERTIARY}
+              value={formTitle}
+              onChangeText={setFormTitle}
+              autoFocus
+            />
+
+            <Text style={s.fieldLabel}>Artist</Text>
+            <TextInput
+              style={s.fieldInput}
+              placeholder="Artist name"
+              placeholderTextColor={theme.TEXT_TERTIARY}
+              value={formArtist}
+              onChangeText={setFormArtist}
+              autoCapitalize="words"
+            />
+
+            <Text style={s.fieldLabel}>Album</Text>
+            <TextInput
+              style={s.fieldInput}
+              placeholder="Album name (optional)"
+              placeholderTextColor={theme.TEXT_TERTIARY}
+              value={formAlbum}
+              onChangeText={setFormAlbum}
+              autoCapitalize="words"
+            />
+
+            <View style={s.uploadModalBtns}>
+              <TouchableOpacity
+                style={s.uploadCancelBtn}
+                onPress={() => { setShowUploadForm(false); setPendingAsset(null) }}
+              >
+                <Text style={{ color: theme.TEXT_SECONDARY, fontSize: 14 }}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={s.uploadConfirmBtn} onPress={handleUploadConfirm}>
+                <Ionicons name="cloud-upload-outline" size={14} color={theme.TEXT_PRIMARY} />
+                <Text style={s.uploadConfirmTxt}>Upload</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
     </SafeAreaView>
   )
 }
@@ -328,4 +435,24 @@ const s = StyleSheet.create({
   bpmBadge:     { backgroundColor: theme.BG_ELEVATED, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 3 },
   bpmTxt:       { color: theme.INFO, fontSize: 11, fontWeight: 'bold' },
   delBtn: { width: 24, height: 24, justifyContent: 'center', alignItems: 'center', marginLeft: 4 },
+
+  // Upload metadata modal
+  overlay:        { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center' },
+  uploadModal:    { backgroundColor: theme.BG_SECONDARY, borderRadius: theme.RADIUS_LG, padding: 20, width: 320 },
+  uploadModalTitle: { color: theme.TEXT_PRIMARY, fontSize: 16, fontWeight: 'bold', marginBottom: 4 },
+  uploadModalSub:   { color: theme.TEXT_TERTIARY, fontSize: 11, marginBottom: 16 },
+  fieldLabel:     { color: theme.TEXT_SECONDARY, fontSize: 11, fontWeight: '600', marginBottom: 4, marginTop: 8 },
+  fieldInput: {
+    backgroundColor: theme.BG_TERTIARY, color: theme.TEXT_PRIMARY,
+    borderWidth: 1, borderColor: theme.BORDER, borderRadius: theme.RADIUS_SM,
+    paddingHorizontal: 12, height: 40, fontSize: 13,
+  },
+  uploadModalBtns:  { flexDirection: 'row', justifyContent: 'flex-end', gap: 10, marginTop: 20 },
+  uploadCancelBtn:  { paddingHorizontal: 12, paddingVertical: 9 },
+  uploadConfirmBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: theme.ACCENT, borderRadius: theme.RADIUS_SM,
+    paddingHorizontal: 16, paddingVertical: 9,
+  },
+  uploadConfirmTxt: { color: theme.TEXT_PRIMARY, fontWeight: 'bold', fontSize: 13 },
 })

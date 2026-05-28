@@ -27,6 +27,8 @@ export default function TrackDetailScreen() {
 
   const [bpm,           setBpm]           = useState('—')
   const [key,           setKey]           = useState('—')
+  const [energy,        setEnergy]        = useState('—')
+  const [danceability,  setDanceability]  = useState('—')
   const [status,        setStatus]        = useState('—')
   const [magnitudes,    setMagnitudes]    = useState<number[] | null>(null)
   const [isLoading,     setIsLoading]     = useState(true)
@@ -65,6 +67,8 @@ export default function TrackDetailScreen() {
     pollCountRef.current = 0
     setBpm(String(track.bpm))
     setKey(track.key)
+    setEnergy('—')
+    setDanceability('—')
     setStatus(track.status
       ? track.status.charAt(0).toUpperCase() + track.status.slice(1)
       : '—')
@@ -97,6 +101,8 @@ export default function TrackDetailScreen() {
         const keyVal = [kp, sp].filter(Boolean).join(' ') || '—'
         if (bpmNum != null) setBpm(String(bpmNum))
         setKey(keyVal)
+        if (a.energy      != null) setEnergy(`${(Number(a.energy)      * 100).toFixed(1)}%`)
+        if (a.danceability != null) setDanceability(`${(Number(a.danceability) * 100).toFixed(1)}%`)
         setStatus('Analyzed')
         setAnalysisReady(true)
         const mags = a.fft_magnitudes ?? a.fft_data ?? a.spectrum
@@ -182,7 +188,9 @@ export default function TrackDetailScreen() {
       </View>
 
       <Text style={s.trackTitle}>{track.title}</Text>
-      <Text style={s.trackArtist}>{track.artist}</Text>
+      <Text style={s.trackArtist}>
+        {track.artist}{track.album ? ` · ${track.album}` : ''}
+      </Text>
       <View style={s.durationRow}>
         <Ionicons name="time-outline" size={12} color={theme.TEXT_TERTIARY} />
         <Text style={s.trackDuration}> {track.duration}</Text>
@@ -207,6 +215,21 @@ export default function TrackDetailScreen() {
           </View>
         ))}
       </View>
+
+      {/* Energy + Danceability — shown once analysis has arrived */}
+      {analysisReady && (
+        <View style={[s.statsRow, { marginTop: 0 }]}>
+          {[
+            { label: 'Energy',       value: energy,       color: theme.ACCENT },
+            { label: 'Danceability', value: danceability, color: theme.SUCCESS },
+          ].map(st => (
+            <View key={st.label} style={s.statBox}>
+              <Text style={[s.statVal, { color: st.color }]} numberOfLines={1} adjustsFontSizeToFit>{st.value}</Text>
+              <Text style={s.statLbl}>{st.label}</Text>
+            </View>
+          ))}
+        </View>
+      )}
 
       {isLoading && <ActivityIndicator color={theme.ACCENT} style={{ marginVertical: 8 }} />}
       {pollExhausted && !analysisReady && (

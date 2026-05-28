@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
+import { DEMO_MODE, DEMO_USER, DEMO_TRACKS, demoAnalysis, nextDemoTrack } from '../constants/demo'
 
 const BASE_URL = 'https://harmonia-api-n8zp.onrender.com'
 
@@ -8,6 +9,7 @@ export interface Track {
   id: number
   title: string
   artist: string
+  album?: string
   duration: string
   bpm: number | '—'
   key: string
@@ -50,6 +52,7 @@ export function normalizeTrack(
     id:          raw.id,
     title:       raw.title  ?? 'Unknown',
     artist:      raw.artist ?? 'Unknown Artist',
+    album:       raw.album  ?? undefined,
     duration:    formatDuration(raw.duration ?? raw.duration_seconds),
     bpm:         roundBpm(a.bpm ?? raw.bpm),
     key:         keyFull,
@@ -61,6 +64,7 @@ export function normalizeTrack(
 // ── Auth ───────────────────────────────────────────────────────────────────
 
 export async function getOrCreateUserId(): Promise<number> {
+  if (DEMO_MODE) return DEMO_USER.id
   const userJson = await AsyncStorage.getItem('harmonia_user')
   if (userJson) {
     const u = JSON.parse(userJson) as AuthUser
@@ -81,6 +85,7 @@ export async function getOrCreateUserId(): Promise<number> {
 }
 
 export async function loginUser(username: string, password: string): Promise<AuthUser> {
+  if (DEMO_MODE) return { ...DEMO_USER, username: username || DEMO_USER.username }
   const resp = await fetch(`${BASE_URL}/api/users/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -95,6 +100,7 @@ export async function loginUser(username: string, password: string): Promise<Aut
 }
 
 export async function registerUser(username: string, password: string): Promise<AuthUser> {
+  if (DEMO_MODE) return { ...DEMO_USER, username: username || DEMO_USER.username }
   const resp = await fetch(`${BASE_URL}/api/users/register`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -111,6 +117,7 @@ export async function registerUser(username: string, password: string): Promise<
 // ── Tracks ─────────────────────────────────────────────────────────────────
 
 export async function fetchTracks(): Promise<Track[]> {
+  if (DEMO_MODE) return [...DEMO_TRACKS]
   const userId = await getOrCreateUserId()
   const resp = await fetch(`${BASE_URL}/api/tracks/user/${userId}`)
   if (!resp.ok) throw new Error(`Fetch tracks failed: ${resp.status}`)
@@ -119,6 +126,7 @@ export async function fetchTracks(): Promise<Track[]> {
 }
 
 export async function deleteTrack(trackId: number): Promise<boolean> {
+  if (DEMO_MODE) return true
   const resp = await fetch(`${BASE_URL}/api/tracks/${trackId}`, { method: 'DELETE' })
   return resp.ok
 }
@@ -127,10 +135,11 @@ export async function uploadTrack(
   fileUri: string,
   fileName: string,
   mimeType: string,
+  metadata: { title: string; artist: string; album: string },
   fileBlob?: File | Blob
 ): Promise<Track> {
+  if (DEMO_MODE) return nextDemoTrack(fileName, metadata) as Track
   const userId = await getOrCreateUserId()
-  const title  = fileName.replace(/\.[^.]+$/, '')
 
   const ext = fileName.split('.').pop()?.toLowerCase()
   if (ext !== 'mp3' && ext !== 'wav') {
@@ -146,8 +155,9 @@ export async function uploadTrack(
     formData.append('file', { uri: fileUri, name: fileName, type: mimeType } as any)
   }
   formData.append('user_id', String(userId))
-  formData.append('title',   title)
-  formData.append('artist',  'Unknown Artist')
+  formData.append('title',   metadata.title  || fileName.replace(/\.[^.]+$/, ''))
+  formData.append('artist',  metadata.artist || 'Unknown Artist')
+  formData.append('album',   metadata.album  || '')
 
   const resp = await fetch(`${BASE_URL}/api/tracks/upload`, { method: 'POST', body: formData })
   if (!resp.ok) throw new Error(`Upload failed: ${resp.status}`)
@@ -167,6 +177,7 @@ export async function uploadTrack(
 // { id, title, artist, analysis: null | { bpm, key, scale, ... } }.
 // Returning {} when analysis is null keeps the polling loop going without throwing.
 export async function fetchAnalysis(trackId: number): Promise<Record<string, any>> {
+  if (DEMO_MODE) return demoAnalysis(trackId) as Record<string, any>
   const resp = await fetch(`${BASE_URL}/api/tracks/${trackId}`)
   if (!resp.ok) throw new Error(`Track fetch failed: ${resp.status}`)
   const data = await resp.json()
@@ -174,6 +185,7 @@ export async function fetchAnalysis(trackId: number): Promise<Record<string, any
 }
 
 export async function triggerAnalysis(trackId: number): Promise<void> {
+  if (DEMO_MODE) return
   const resp = await fetch(`${BASE_URL}/api/analysis/analyze/${trackId}`, { method: 'POST' })
   if (!resp.ok) throw new Error(`Trigger analysis failed: ${resp.status}`)
 }

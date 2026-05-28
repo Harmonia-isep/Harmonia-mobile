@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useLayoutEffect } from 'react'
+import React, { useState, useEffect, useLayoutEffect, useRef } from 'react'
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
   Alert, ActivityIndicator, useWindowDimensions,
@@ -9,7 +9,7 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack'
 
 import { theme } from '../constants/theme'
 import { useTracks } from '../context/TrackContext'
-import { fetchAnalysis, deleteTrack } from '../data/api'
+import { fetchAnalysis, triggerAnalysis, deleteTrack } from '../data/api'
 import WaveformBar from '../components/WaveformBar'
 import FFTBar from '../components/FFTBar'
 import { LibraryStackParamList } from '../types/navigation'
@@ -33,41 +33,65 @@ export default function TrackDetailScreen() {
   const [hasError,      setHasError]      = useState(false)
   const [showSimilar,   setShowSimilar]   = useState(false)
   const [analysisReady, setAnalysisReady] = useState(false)
-  const [retryCount,    setRetryCount]    = useState(0)
-  const MAX_RETRIES = 20   // ~60 s of polling before giving up
+  const [pollExhausted, setPollExhausted] = useState(false)
+  const [retryTrigger,  setRetryTrigger]  = useState(0)
+
+  // Polling is driven by a setInterval stored in a ref, not by React state.
+  // This makes it immune to re-renders and keeps the loop alive through transient errors.
+  const pollRef      = useRef<ReturnType<typeof setInterval> | null>(null)
+  const pollCountRef = useRef(0)
+  const MAX_POLLS = 10    // 10 × 4 s = 40 s of background polling after the first fetch
+  const POLL_MS   = 4000
+
+  // Tears down the interval without touching React state — safe to call from cleanup.
+  function clearPoll() {
+    if (pollRef.current != null) {
+      clearInterval(pollRef.current)
+      pollRef.current = null
+    }
+  }
 
   useLayoutEffect(() => {
     nav.setOptions({ title: track?.title ?? 'Track Detail' })
   }, [track?.title])
 
-  // Reset state and kick off the first analysis fetch whenever the track changes
+  // Kick off an immediate fetch + start the background polling interval.
+  // Cleans up the interval when the user navigates away or views a different track.
   useEffect(() => {
     if (!track) return
+
     setAnalysisReady(false)
-    setRetryCount(0)
+    setPollExhausted(false)
+    pollCountRef.current = 0
     setBpm(String(track.bpm))
     setKey(track.key)
     setStatus(track.status
       ? track.status.charAt(0).toUpperCase() + track.status.slice(1)
       : '—')
-    loadAnalysis(track.id)
-  }, [track?.id])
 
-  // Poll every 3 s while analysis hasn't arrived yet (backend job is async)
-  useEffect(() => {
-    if (analysisReady || !track || retryCount === 0 || retryCount > MAX_RETRIES) return
-    const timer = setTimeout(() => loadAnalysis(track.id), 3000)
-    return () => clearTimeout(timer)
-  }, [retryCount, analysisReady, track?.id])
+    loadAnalysis(track.id, true)   // first load shows the spinner
+
+    pollRef.current = setInterval(() => {
+      pollCountRef.current += 1
+      if (pollCountRef.current >= MAX_POLLS) {
+        clearPoll()
+        setPollExhausted(true)
+        return
+      }
+      loadAnalysis(track.id)       // subsequent polls are silent (no spinner)
+    }, POLL_MS)
+
+    return clearPoll   // stop the interval when unmounting or navigating away
+  }, [track?.id, retryTrigger])
 
   // ── UC02: fetch analysis ──────────────────────────────────────────────
 
-  async function loadAnalysis(trackId: number) {
-    setIsLoading(true)
-    setHasError(false)
+  async function loadAnalysis(trackId: number, showSpinner = false) {
+    if (showSpinner) { setIsLoading(true); setHasError(false) }
     try {
       const a = await fetchAnalysis(trackId)
       if (a && Object.keys(a).length > 0) {
+        clearPoll()   // got the data — stop all further polling
         const bpmNum = typeof a.bpm === 'number' ? Math.round(a.bpm) : null
         const kp = a.key ?? ''; const sp = a.scale ?? ''
         const keyVal = [kp, sp].filter(Boolean).join(' ') || '—'
@@ -83,15 +107,22 @@ export default function TrackDetailScreen() {
             ? { ...t, bpm: bpmNum ?? t.bpm, key: keyVal, status: 'analyzed' }
             : t
         ))
-      } else {
-        // Backend job not finished yet — polling effect will retry after 3 s
-        setRetryCount(n => n + 1)
       }
+      // Empty result (404 / not ready): interval keeps firing until data arrives or MAX_POLLS
     } catch {
-      setHasError(true)
+      // Swallow transient errors (503 cold-start, network blip) so the polling loop
+      // survives and retries on the next tick instead of dying permanently.
     } finally {
-      setIsLoading(false)
+      if (showSpinner) setIsLoading(false)
     }
+  }
+
+  // Re-trigger the backend analysis job then restart the polling loop.
+  // Called when the user taps "Retry" after poll exhaustion.
+  async function retryAnalysis() {
+    if (!track) return
+    try { await triggerAnalysis(track.id) } catch {}
+    setRetryTrigger(n => n + 1)  // causes the setup useEffect to re-run cleanly
   }
 
   // ── UC05: delete ──────────────────────────────────────────────────────
@@ -164,9 +195,9 @@ export default function TrackDetailScreen() {
           { label: 'Key',    value: key,    color: theme.SUCCESS },
           {
             label: 'Status',
-            value: (!analysisReady && retryCount > 0 && retryCount <= MAX_RETRIES)
-              ? 'Analyzing…'
-              : status,
+            value: analysisReady ? 'Analyzed'
+              : pollExhausted  ? '—'
+              : 'Analyzing…',
             color: theme.WARNING,
           },
         ].map(st => (
@@ -178,11 +209,11 @@ export default function TrackDetailScreen() {
       </View>
 
       {isLoading && <ActivityIndicator color={theme.ACCENT} style={{ marginVertical: 8 }} />}
-      {hasError && (
+      {pollExhausted && !analysisReady && (
         <View style={s.errBox}>
-          <Ionicons name="warning-outline" size={14} color={theme.ERROR} style={{ marginRight: 6 }} />
-          <Text style={s.errTxt}>Could not load analysis</Text>
-          <TouchableOpacity style={s.retryBtn} onPress={() => loadAnalysis(track.id)}>
+          <Ionicons name="warning-outline" size={14} color={theme.WARNING} style={{ marginRight: 6 }} />
+          <Text style={s.errTxt}>Analysis is taking longer than expected</Text>
+          <TouchableOpacity style={s.retryBtn} onPress={retryAnalysis}>
             <Text style={s.retryTxt}>Retry</Text>
           </TouchableOpacity>
         </View>

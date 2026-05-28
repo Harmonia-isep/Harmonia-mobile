@@ -10,6 +10,7 @@ import { useFocusEffect } from '@react-navigation/native'
 import { theme } from '../constants/theme'
 import { loadPlaylists, updatePlaylist, Playlist } from '../data/storage'
 import { useTracks } from '../context/TrackContext'
+import { useAuth } from '../context/AuthContext'
 import { Track } from '../data/api'
 import { PlaylistsStackParamList } from '../types/navigation'
 
@@ -18,15 +19,17 @@ type RouteP = RouteProp<PlaylistsStackParamList, 'PlaylistDetail'>
 export default function PlaylistDetailScreen() {
   const route    = useRoute<RouteP>()
   const { tracks } = useTracks()
+  const { user } = useAuth()
+  const userId = user?.id ?? 0
 
   const [playlist,   setPlaylist]   = useState<Playlist | null>(null)
   const [showPicker, setShowPicker] = useState(false)
 
   useFocusEffect(useCallback(() => {
-    loadPlaylists().then(list => {
+    loadPlaylists(userId).then(list => {
       setPlaylist(list.find(p => p.id === route.params.playlistId) ?? null)
     })
-  }, [route.params.playlistId]))
+  }, [userId, route.params.playlistId]))
 
   if (!playlist) return (
     <View style={s.center}><Text style={{ color: theme.TEXT_SECONDARY }}>Playlist not found.</Text></View>
@@ -39,7 +42,7 @@ export default function PlaylistDetailScreen() {
 
   async function persist(updated: Playlist) {
     setPlaylist(updated)
-    await updatePlaylist(updated)
+    await updatePlaylist(userId, updated)
   }
 
   async function addTrack(trackId: number) {

@@ -163,11 +163,14 @@ export async function uploadTrack(
 
 // ── Analysis ───────────────────────────────────────────────────────────────
 
+// Uses GET /api/tracks/{id} — the teammate's combined endpoint — which returns
+// { id, title, artist, analysis: null | { bpm, key, scale, ... } }.
+// Returning {} when analysis is null keeps the polling loop going without throwing.
 export async function fetchAnalysis(trackId: number): Promise<Record<string, any>> {
-  const resp = await fetch(`${BASE_URL}/api/analysis/${trackId}`)
-  if (resp.status === 404) return {}
-  if (!resp.ok) throw new Error(`Analysis fetch failed: ${resp.status}`)
-  return (await resp.json()) ?? {}
+  const resp = await fetch(`${BASE_URL}/api/tracks/${trackId}`)
+  if (!resp.ok) throw new Error(`Track fetch failed: ${resp.status}`)
+  const data = await resp.json()
+  return data.analysis ?? {}
 }
 
 export async function triggerAnalysis(trackId: number): Promise<void> {

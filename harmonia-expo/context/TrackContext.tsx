@@ -32,7 +32,11 @@ export function TrackProvider({ children }: { children: React.ReactNode }) {
       setTracks(data)
       setIsOffline(false)
     } catch {
-      setTracks(MOCK_TRACKS)
+      // A server error (500, 503) must NOT overwrite tracks the user has already
+      // uploaded — those live in local state and would be lost if we replace them
+      // with MOCK_TRACKS. Only fall back to mocks when the list is genuinely empty
+      // (first load on a device with no connectivity at all).
+      setTracks(prev => prev.length === 0 ? MOCK_TRACKS : prev)
       setIsOffline(true)
     } finally {
       setIsLoading(false)

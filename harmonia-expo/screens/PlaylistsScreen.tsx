@@ -1,7 +1,7 @@
 import React, { useState, useCallback } from 'react'
 import {
   View, Text, FlatList, TouchableOpacity, StyleSheet,
-  Alert, TextInput, Modal, SafeAreaView, StatusBar,
+  Alert, TextInput, Modal, SafeAreaView, StatusBar, Platform,
 } from 'react-native'
 import { Ionicons } from '@expo/vector-icons'
 import { useNavigation, useFocusEffect } from '@react-navigation/native'
@@ -9,20 +9,26 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack'
 
 import { theme } from '../constants/theme'
 import { loadPlaylists, createPlaylist, deletePlaylist, Playlist } from '../data/storage'
+import { useAuth } from '../context/AuthContext'
 import { PlaylistsStackParamList } from '../types/navigation'
 
 type NavProp = NativeStackNavigationProp<PlaylistsStackParamList, 'Playlists'>
 
 export default function PlaylistsScreen() {
   const nav = useNavigation<NavProp>()
+  const { user } = useAuth()
+  // PlaylistsScreen is only rendered inside MainTabs which requires authentication,
+  // so user is always non-null here. Fall back to 0 only to satisfy TypeScript.
+  const userId = user?.id ?? 0
+
   const [playlists, setPlaylists] = useState<Playlist[]>([])
   const [showModal, setShowModal] = useState(false)
   const [newName,   setNewName]   = useState('')
   const [nameError, setNameError] = useState('')
 
   useFocusEffect(useCallback(() => {
-    loadPlaylists().then(setPlaylists)
-  }, []))
+    loadPlaylists(userId).then(setPlaylists)
+  }, [userId]))
 
   async function handleCreate() {
     const name = newName.trim()
@@ -31,7 +37,7 @@ export default function PlaylistsScreen() {
       setNameError('A playlist with that name already exists')
       return
     }
-    const updated = await createPlaylist(name)
+    const updated = await createPlaylist(userId, name)
     setPlaylists(updated)
     setNewName('')
     setNameError('')
@@ -39,16 +45,18 @@ export default function PlaylistsScreen() {
   }
 
   function handleDelete(pl: Playlist) {
-    Alert.alert('Delete Playlist', `Delete "${pl.name}"?\nTracks remain in the library.`, [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete', style: 'destructive',
-        onPress: async () => {
-          const updated = await deletePlaylist(pl.id)
-          setPlaylists(updated)
-        },
-      },
-    ])
+    const doDelete = async () => {
+      const updated = await deletePlaylist(userId, pl.id)
+      setPlaylists(updated)
+    }
+    if (Platform.OS === 'web') {
+      if (window.confirm(`Delete "${pl.name}"?\nTracks remain in the library.`)) doDelete()
+    } else {
+      Alert.alert('Delete Playlist', `Delete "${pl.name}"?\nTracks remain in the library.`, [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Delete', style: 'destructive', onPress: doDelete },
+      ])
+    }
   }
 
   return (

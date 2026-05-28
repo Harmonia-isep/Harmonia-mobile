@@ -1,3 +1,5 @@
+import csv
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QLineEdit, QScrollArea, QFrame, QPushButton,
@@ -187,7 +189,8 @@ class TrackCard(QFrame):
 # ── Library screen ─────────────────────────────────────────────────────────
 
 class LibraryScreen(QWidget):
-    connected = Signal(str)
+    connected           = Signal(str)
+    playlists_requested = Signal()
 
     def __init__(self, on_track_select):
         super().__init__()
@@ -217,10 +220,15 @@ class LibraryScreen(QWidget):
         ttl.setStyleSheet(f"color: {theme.TEXT_PRIMARY}; font-size: 20px; font-weight: bold;")
         hdr.addWidget(ttl)
         hdr.addStretch()
-        self._refresh_btn = self._mk_btn("↻", theme.TEXT_SECONDARY, self._load_tracks, "Refresh")
-        add_btn           = self._mk_btn("+", theme.ACCENT,          self._add_track,   "Upload track")
+        self._refresh_btn = self._mk_btn("↻", theme.TEXT_SECONDARY, self._load_tracks,          "Refresh")
+        add_btn           = self._mk_btn("+", theme.ACCENT,          self._add_track,            "Upload track")
+        self._export_btn  = self._mk_btn("⬇", theme.SUCCESS,         self._export_csv,           "Export library as CSV")
+        pl_btn            = self._mk_btn("≡", theme.INFO,             self.playlists_requested,   "Playlists")
+        self._export_btn.setEnabled(False)
         hdr.addWidget(self._refresh_btn)
         hdr.addWidget(add_btn)
+        hdr.addWidget(self._export_btn)
+        hdr.addWidget(pl_btn)
         root.addLayout(hdr)
 
         # Search bar
@@ -291,7 +299,7 @@ class LibraryScreen(QWidget):
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        scroll.setStyleSheet(f"QScrollArea {{ border: none; background: {theme.BG_PRIMARY}; }}")
         scroll.viewport().setStyleSheet(f"background: {theme.BG_PRIMARY};")
 
         self._list_widget = QWidget()
@@ -365,6 +373,7 @@ class LibraryScreen(QWidget):
         print(f"DEBUG: API error → {msg}")
         self._use_mock  = True
         self.all_tracks = list(MOCK_TRACKS)
+        self._export_btn.setEnabled(True)
         self._status.setText("⚠  Offline — showing demo tracks")
         self._render_tracks(self.all_tracks)
 
@@ -480,7 +489,49 @@ class LibraryScreen(QWidget):
     def _update_status(self, count: int):
         if self._use_mock:
             return
+        self._export_btn.setEnabled(count > 0)
         self._status.setText(
             f"{count} track{'s' if count != 1 else ''}"
             if count else "No tracks yet — press + to upload one"
         )
+
+    # ── UC08: CSV export ───────────────────────────────────────────────────
+
+    def _export_csv(self):
+        if not self.all_tracks:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Library", "harmonia_library.csv",
+            "CSV Files (*.csv);;All Files (*)"
+        )
+        if not path:
+            return
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(
+                f, fieldnames=["title", "artist", "duration", "bpm", "key", "upload_date"]
+            )
+            writer.writeheader()
+            for t in self.all_tracks:
+                writer.writerow({
+                    "title":       t.get("title", ""),
+                    "artist":      t.get("artist", ""),
+                    "duration":    t.get("duration", ""),
+                    "bpm":         t.get("bpm", ""),
+                    "key":         t.get("key", ""),
+                    "upload_date": t.get("upload_date", "—"),
+                })
+        n = len(self.all_tracks)
+        self._status.setText(f"✓ Exported {n} track{'s' if n != 1 else ''}")
+
+    # ── UC05 helper: delete from detail screen (no confirmation dialog) ────
+
+    def delete_by_id(self, track_id: int):
+        if self._use_mock:
+            self.all_tracks = [t for t in self.all_tracks if t["id"] != track_id]
+            self._apply_filters()
+            self._update_status(len(self.all_tracks))
+            return
+        self._status.setText("Deleting…")
+        self._delete_worker = DeleteWorker(track_id)
+        self._delete_worker.finished.connect(self._on_deleted)
+        self._delete_worker.start()

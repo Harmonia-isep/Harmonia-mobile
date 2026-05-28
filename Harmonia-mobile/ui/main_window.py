@@ -3,17 +3,14 @@ from PySide6.QtCore import Qt, QTimer
 
 from ui.library_screen import LibraryScreen
 from ui.track_detail_screen import TrackDetailScreen
+from ui.playlist_screen import PlaylistScreen
+from ui.compare_screen import CompareScreen
 from ui import theme
 
 
 # ── Toast notification ─────────────────────────────────────────────────────
 
 class Toast(QLabel):
-    """
-    Small overlay banner that slides in at the bottom of the window,
-    stays for `duration_ms` milliseconds, then hides itself.
-    """
-
     def __init__(self, parent: QWidget):
         super().__init__(parent)
         self.setAlignment(Qt.AlignCenter)
@@ -83,25 +80,50 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.setCentralWidget(self.stack)
 
-        self.library = LibraryScreen(on_track_select=self.show_detail)
-        self.detail  = TrackDetailScreen(on_back=self.show_library)
+        self.library  = LibraryScreen(on_track_select=self.show_detail)
+        self.detail   = TrackDetailScreen(on_back=self.show_library)
+        self.playlists = PlaylistScreen(on_back=self.show_library)
+        self.compare  = CompareScreen(
+            on_back=lambda: self.stack.setCurrentIndex(1),
+            get_library_tracks=lambda: self.library.all_tracks,
+        )
 
-        self.stack.addWidget(self.library)   # index 0
-        self.stack.addWidget(self.detail)    # index 1
+        self.stack.addWidget(self.library)    # 0
+        self.stack.addWidget(self.detail)     # 1
+        self.stack.addWidget(self.playlists)  # 2
+        self.stack.addWidget(self.compare)    # 3
 
         self._toast = Toast(self.centralWidget())
+
+        # Signals
         self.library.connected.connect(self._on_connected)
+        self.library.playlists_requested.connect(self.show_playlists)
+        self.detail.delete_requested.connect(self._on_detail_delete)
+        self.detail.compare_requested.connect(self.show_compare)
 
     # ── Navigation ─────────────────────────────────────────────────────────
 
     def show_detail(self, track: dict):
+        self.detail.set_library_tracks(self.library.all_tracks)
         self.detail.load_track(track)
         self.stack.setCurrentIndex(1)
 
     def show_library(self):
         self.stack.setCurrentIndex(0)
 
-    # ── Toast ───────────────────────────────────────────────────────────────
+    def show_playlists(self):
+        self.playlists.refresh(self.library.all_tracks)
+        self.stack.setCurrentIndex(2)
+
+    def show_compare(self, track: dict):
+        self.compare.set_track_a(track)
+        self.stack.setCurrentIndex(3)
+
+    # ── Handlers ───────────────────────────────────────────────────────────
+
+    def _on_detail_delete(self, track_id: int):
+        self.library.delete_by_id(track_id)
+        self.show_library()
 
     def _on_connected(self, message: str):
         self._toast.show_message(f"🟢  {message}")

@@ -1,0 +1,12 @@
+{
+  "playlists": [
+    {
+      "id": 1,
+      "name": "inas",
+      "tracks": [
+        2,
+        3
+      ]
+    }
+  ]
+}

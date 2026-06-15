@@ -8,7 +8,7 @@ import { useRoute, RouteProp } from '@react-navigation/native'
 import { theme } from '../constants/theme'
 import { useTracks } from '../context/TrackContext'
 import FFTBar from '../components/FFTBar'
-import { Track } from '../data/api'
+import { Track, fetchAnalysis } from '../data/api'
 import { LibraryStackParamList } from '../types/navigation'
 
 type RouteP = RouteProp<LibraryStackParamList, 'Compare'>
@@ -16,11 +16,42 @@ type RouteP = RouteProp<LibraryStackParamList, 'Compare'>
 export default function CompareScreen() {
   const { width } = useWindowDimensions()
   const route     = useRoute<RouteP>()
-  const { tracks } = useTracks()
+  const { tracks, setTracks } = useTracks()
 
   const trackA = tracks.find(t => t.id === route.params.trackId) ?? null
-  const [trackB,     setTrackB]     = useState<Track | null>(null)
+
+  // Store only the ID so trackB re-derives from the live tracks array on every render.
+  // This means any setTracks() call (e.g. from analysis fetch below) is reflected instantly.
+  const [trackBId,   setTrackBId]   = useState<number | null>(null)
+  const [isLoadingB, setIsLoadingB] = useState(false)
   const [showPicker, setShowPicker] = useState(false)
+
+  const trackB: Track | null = trackBId != null
+    ? (tracks.find(t => t.id === trackBId) ?? null)
+    : null
+
+  // When the user picks Track B, immediately fetch its analysis so BPM/Key populate.
+  // Uses the same setTracks pattern as TrackDetailScreen so the data is shared globally.
+  async function handleSelectTrackB(track: Track) {
+    setTrackBId(track.id)
+    setShowPicker(false)
+    if (typeof track.bpm === 'number') return   // already have analysis from a prior detail view
+    setIsLoadingB(true)
+    try {
+      const a = await fetchAnalysis(track.id)
+      if (a && Object.keys(a).length > 0) {
+        const bpmNum = typeof a.bpm === 'number' ? Math.round(a.bpm) : null
+        const kp = a.key ?? ''; const sp = a.scale ?? ''
+        const keyVal = [kp, sp].filter(Boolean).join(' ') || '—'
+        setTracks(prev => prev.map(t =>
+          t.id === track.id
+            ? { ...t, bpm: bpmNum ?? t.bpm, key: keyVal, status: 'analyzed' }
+            : t
+        ))
+      }
+    } catch {}
+    finally { setIsLoadingB(false) }
+  }
 
   const vizW = width - 32
 
@@ -63,9 +94,9 @@ export default function CompareScreen() {
         <View style={s.statsRow}>
           {[
             { label: 'BPM (A)',  value: String(trackA?.bpm ?? '—'), color: theme.ACCENT },
-            { label: 'BPM (B)',  value: String(trackB.bpm  ?? '—'), color: theme.INFO   },
-            { label: 'Key (A)',  value: trackA?.key ?? '—',         color: theme.ACCENT },
-            { label: 'Key (B)',  value: trackB.key  ?? '—',         color: theme.INFO   },
+            { label: 'BPM (B)',  value: isLoadingB ? '…' : String(trackB.bpm ?? '—'), color: theme.INFO   },
+            { label: 'Key (A)',  value: trackA?.key ?? '—',                            color: theme.ACCENT },
+            { label: 'Key (B)',  value: isLoadingB ? '…' : (trackB.key  ?? '—'),       color: theme.INFO   },
           ].map(st => (
             <View key={st.label} style={s.statBox}>
               <Text style={[s.statVal, { color: st.color }]} numberOfLines={1} adjustsFontSizeToFit>{st.value}</Text>
@@ -102,7 +133,7 @@ export default function CompareScreen() {
               keyExtractor={t => String(t.id)}
               renderItem={({ item }) => (
                 <TouchableOpacity style={s.sheetItem}
-                  onPress={() => { setTrackB(item); setShowPicker(false) }}>
+                  onPress={() => handleSelectTrackB(item)}>
                   <Text style={s.sheetItemTitle}>{item.title}</Text>
                   <Text style={s.sheetItemSub}>{item.artist} · {item.bpm} BPM · {item.key}</Text>
                 </TouchableOpacity>

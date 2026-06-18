@@ -1,7 +1,18 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { DEMO_MODE, DEMO_USER, DEMO_TRACKS, demoAnalysis, nextDemoTrack } from '../constants/demo'
 
-const BASE_URL = 'https://harmonia-api-n8zp.onrender.com'
+// Env-driven, but the live Render backend is the hardcoded fallback so the app
+// never silently drops to demo data. Expo inlines EXPO_PUBLIC_* vars from the
+// matching .env file at build time (.env.development for `expo start`,
+// .env.production for prod builds); both currently point at Render.
+// We fall back when the var is missing OR blank, then strip any trailing slash
+// so joinUrl() never produces a double slash.
+const ENV_API_URL = process.env.EXPO_PUBLIC_API_URL?.trim()
+export const BASE_URL = (
+  ENV_API_URL && ENV_API_URL.length > 0
+    ? ENV_API_URL
+    : 'https://harmonia-api-n8zp.onrender.com'
+).replace(/\/+$/, '')
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -15,6 +26,7 @@ export interface Track {
   key: string
   status: string
   upload_date?: string
+  file_path?: string
 }
 
 export interface AuthUser {
@@ -58,6 +70,7 @@ export function normalizeTrack(
     key:         keyFull,
     status:      a.status ?? raw.status ?? 'ready',
     upload_date: raw.uploaded_at ?? raw.created_at ?? raw.upload_date,
+    file_path:   raw.file_path ?? raw.path ?? undefined,
   }
 }
 
@@ -125,6 +138,48 @@ export async function fetchTracks(): Promise<Track[]> {
   return (data ?? []).map((t: any) => normalizeTrack(t))
 }
 
+export interface TrackFilter {
+  search?: string
+  key?: string       // root note only, e.g. 'A' — backend matches Analysis.key exactly
+  bpm_min?: string
+  bpm_max?: string
+}
+
+// Mirrors the web app's searchTracks: the BPM/key filters live on the Analysis
+// table, which the plain list endpoint does NOT return. So filtering must be done
+// server-side via query params (GET /api/tracks/user/{id}?key=A&bpm_min=…), exactly
+// like the web. A client-side filter can't work — the device never has the key/bpm.
+export async function searchTracks(filter: TrackFilter): Promise<Track[]> {
+  if (DEMO_MODE) {
+    return DEMO_TRACKS.filter(t => {
+      if (filter.search) {
+        const q = filter.search.toLowerCase()
+        if (!t.title.toLowerCase().includes(q) && !t.artist.toLowerCase().includes(q)) return false
+      }
+      if (filter.key) {
+        const root = String(t.key).split(' ')[0]
+        if (root.toLowerCase() !== filter.key.toLowerCase()) return false
+      }
+      if (filter.bpm_min && typeof t.bpm === 'number' && t.bpm < parseInt(filter.bpm_min, 10)) return false
+      if (filter.bpm_max && typeof t.bpm === 'number' && t.bpm > parseInt(filter.bpm_max, 10)) return false
+      return true
+    }) as Track[]
+  }
+
+  const userId = await getOrCreateUserId()
+  const params: string[] = []
+  if (filter.search)  params.push(`search=${encodeURIComponent(filter.search)}`)
+  if (filter.key)     params.push(`key=${encodeURIComponent(filter.key)}`)
+  if (filter.bpm_min) params.push(`bpm_min=${encodeURIComponent(filter.bpm_min)}`)
+  if (filter.bpm_max) params.push(`bpm_max=${encodeURIComponent(filter.bpm_max)}`)
+  const qs = params.length ? `?${params.join('&')}` : ''
+
+  const resp = await fetch(`${BASE_URL}/api/tracks/user/${userId}${qs}`)
+  if (!resp.ok) throw new Error(`Search tracks failed: ${resp.status}`)
+  const data = await resp.json()
+  return (data ?? []).map((t: any) => normalizeTrack(t))
+}
+
 export async function deleteTrack(trackId: number): Promise<boolean> {
   if (DEMO_MODE) return true
   const resp = await fetch(`${BASE_URL}/api/tracks/${trackId}`, { method: 'DELETE' })
@@ -188,4 +243,17 @@ export async function triggerAnalysis(trackId: number): Promise<void> {
   if (DEMO_MODE) return
   const resp = await fetch(`${BASE_URL}/api/analysis/analyze/${trackId}`, { method: 'POST' })
   if (!resp.ok) throw new Error(`Trigger analysis failed: ${resp.status}`)
+}
+
+// Joins a base origin and a path with exactly one slash between them, so we never
+// emit '//' or a missing separator regardless of how BASE_URL is configured.
+export function joinUrl(base: string, path: string): string {
+  return `${base.replace(/\/+$/, '')}/${path.replace(/^\/+/, '')}`
+}
+
+// Mirrors the web's getAudioUrl exactly: the backend streams the raw file through
+// GET /api/tracks/{id}/audio (a FileResponse). There is NO static /uploads mount,
+// so a relative file_path cannot be fetched directly — always go through this route.
+export function getAudioUrl(trackId: number): string {
+  return joinUrl(BASE_URL, `api/tracks/${trackId}/audio`)
 }

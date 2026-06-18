@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react'
+import React, { useState, useCallback, useMemo } from 'react'
 import {
   View, Text, FlatList, TouchableOpacity, StyleSheet,
   Alert, TextInput, Modal, SafeAreaView, StatusBar, Platform,
@@ -10,6 +10,7 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack'
 import { theme } from '../constants/theme'
 import { loadPlaylists, createPlaylist, deletePlaylist, Playlist } from '../data/storage'
 import { useAuth } from '../context/AuthContext'
+import { useTracks } from '../context/TrackContext'
 import { PlaylistsStackParamList } from '../types/navigation'
 
 type NavProp = NativeStackNavigationProp<PlaylistsStackParamList, 'Playlists'>
@@ -17,9 +18,13 @@ type NavProp = NativeStackNavigationProp<PlaylistsStackParamList, 'Playlists'>
 export default function PlaylistsScreen() {
   const nav = useNavigation<NavProp>()
   const { user } = useAuth()
+  const { tracks } = useTracks()
   // PlaylistsScreen is only rendered inside MainTabs which requires authentication,
   // so user is always non-null here. Fall back to 0 only to satisfy TypeScript.
   const userId = user?.id ?? 0
+
+  // Build a Set for O(1) membership checks when computing per-playlist effective counts.
+  const trackIdSet = useMemo(() => new Set(tracks.map(t => t.id)), [tracks])
 
   const [playlists, setPlaylists] = useState<Playlist[]>([])
   const [showModal, setShowModal] = useState(false)
@@ -86,9 +91,7 @@ export default function PlaylistsScreen() {
               <Ionicons name="list" size={18} color={theme.ACCENT} style={s.cardIcon} />
               <View style={{ flex: 1 }}>
                 <Text style={s.cardName}>{item.name}</Text>
-                <Text style={s.cardCount}>
-                  {item.tracks.length} track{item.tracks.length !== 1 ? 's' : ''}
-                </Text>
+                <TrackCount tracks={item.tracks} idSet={trackIdSet} />
               </View>
               <TouchableOpacity style={s.delBtn}
                 onPress={() => handleDelete(item)}
@@ -127,6 +130,11 @@ export default function PlaylistsScreen() {
       </View>
     </SafeAreaView>
   )
+}
+
+function TrackCount({ tracks, idSet }: { tracks: number[]; idSet: Set<number> }) {
+  const n = tracks.filter(id => idSet.has(id)).length
+  return <Text style={s.cardCount}>{n} track{n !== 1 ? 's' : ''}</Text>
 }
 
 const s = StyleSheet.create({

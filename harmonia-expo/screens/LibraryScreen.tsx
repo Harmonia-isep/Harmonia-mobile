@@ -1,10 +1,13 @@
-import React, { useState, useCallback, useMemo } from 'react'
+import React, { useState, useCallback, useEffect } from 'react'
 import {
   View, Text, TextInput, TouchableOpacity, FlatList, StyleSheet,
   Alert, ActivityIndicator, SafeAreaView, StatusBar, Platform, Modal,
 } from 'react-native'
 import * as DocumentPicker from 'expo-document-picker'
-import * as FileSystem from 'expo-file-system'
+// SDK 56's default expo-file-system export is the new File/Paths API, which has no
+// documentDirectory/writeAsStringAsync. The classic API lives at /legacy — that's
+// what the cacheDirectory + writeAsStringAsync export flow below relies on.
+import * as FileSystem from 'expo-file-system/legacy'
 import * as Sharing from 'expo-sharing'
 import { Ionicons } from '@expo/vector-icons'
 import { useNavigation, useFocusEffect } from '@react-navigation/native'
@@ -13,22 +16,20 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack'
 import { theme } from '../constants/theme'
 import { useTracks } from '../context/TrackContext'
 import { useAuth } from '../context/AuthContext'
-import { uploadTrack, deleteTrack } from '../data/api'
+import { uploadTrack, deleteTrack, searchTracks, Track, BASE_URL } from '../data/api'
+import { removeTrackFromAllPlaylists } from '../data/storage'
 import { LibraryStackParamList } from '../types/navigation'
 
-const KEYS = [
-  'All Keys','C major','G major','D major','A major','E major','B major',
-  'F major','Bb major','Eb major','Ab major',
-  'A minor','E minor','B minor','F# minor','C# minor',
-  'D minor','G minor','C minor','F minor',
-]
+// Root-note keys — mirrors the web app's key filter which sends just the root
+// to the backend (e.g. 'E' matches both 'E minor' and 'E major' tracks).
+const KEYS = ['All Keys', 'C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 
 type NavProp = NativeStackNavigationProp<LibraryStackParamList, 'Library'>
 
 export default function LibraryScreen() {
   const nav = useNavigation<NavProp>()
   const { tracks, isLoading, isOffline, loadTracks, setTracks } = useTracks()
-  const { logout } = useAuth()
+  const { user, logout } = useAuth()
 
   const [search,      setSearch]      = useState('')
   const [bpmMin,      setBpmMin]      = useState('')
@@ -37,6 +38,11 @@ export default function LibraryScreen() {
   const [showKeys,    setShowKeys]    = useState(false)
   const [isUploading, setIsUploading] = useState(false)
   const [isExporting, setIsExporting] = useState(false)
+
+  // The list the FlatList renders. Kept separate from the context `tracks` (the full
+  // library used by Compare/Playlist screens) so filtering never hides tracks elsewhere.
+  const [results,     setResults]     = useState<Track[]>([])
+  const [isSearching, setIsSearching] = useState(false)
 
   // Upload form modal
   const [showUploadForm, setShowUploadForm] = useState(false)
@@ -47,25 +53,46 @@ export default function LibraryScreen() {
   const [formArtist, setFormArtist] = useState('')
   const [formAlbum,  setFormAlbum]  = useState('')
 
+  // Keep the context's full library loaded — Compare / Playlist screens and the
+  // detail-screen analysis patch all read from it.
   useFocusEffect(useCallback(() => { loadTracks() }, [loadTracks]))
+
+  const noFilters = !search && selKey === 'All Keys' && !bpmMin && !bpmMax
+
+  // No filters → show the full library straight from context, instantly, no network.
+  useEffect(() => {
+    if (noFilters) setResults(tracks)
+  }, [tracks, noFilters])
+
+  // A filter is active → ask the backend (debounced 400 ms, exactly like the web).
+  // The list endpoint omits key/bpm (they live on the Analysis table), so the server
+  // must do the JOIN/filter; the device has no key/bpm data to filter on locally.
+  useEffect(() => {
+    if (noFilters) return
+    setIsSearching(true)
+    const handle = setTimeout(async () => {
+      try {
+        const data = await searchTracks({
+          search:  search || undefined,
+          key:     selKey !== 'All Keys' ? selKey : undefined,
+          bpm_min: bpmMin || undefined,
+          bpm_max: bpmMax || undefined,
+        })
+        setResults(data)
+      } catch {
+        // keep the previous results on a transient/cold-start error
+      } finally {
+        setIsSearching(false)
+      }
+    }, 400)
+    return () => clearTimeout(handle)
+  }, [search, selKey, bpmMin, bpmMax, noFilters])
 
   // Alert.alert button callbacks are no-ops on React Native Web; use window.alert instead.
   function nativeAlert(title: string, message: string) {
     if (Platform.OS === 'web') window.alert(`${title}\n${message}`)
     else Alert.alert(title, message)
   }
-
-  const filtered = useMemo(() => {
-    const q = search.toLowerCase()
-    return tracks.filter(t => {
-      if (q && !t.title.toLowerCase().includes(q) && !t.artist.toLowerCase().includes(q)) return false
-      const bpm = typeof t.bpm === 'number' ? t.bpm : null
-      if (bpmMin && bpm !== null && bpm < parseInt(bpmMin, 10)) return false
-      if (bpmMax && bpm !== null && bpm > parseInt(bpmMax, 10)) return false
-      if (selKey !== 'All Keys' && !t.key.toLowerCase().includes(selKey.toLowerCase())) return false
-      return true
-    })
-  }, [tracks, search, bpmMin, bpmMax, selKey])
 
   // ── UC01: Upload ──────────────────────────────────────────────────────
 
@@ -132,6 +159,7 @@ export default function LibraryScreen() {
         pendingAsset.file,
       )
       setTracks(prev => [track, ...prev])
+      setResults(prev => [track, ...prev])
       nativeAlert('Uploaded!', `"${track.title}" added to your library.`)
     } catch (e: any) {
       nativeAlert('Upload Failed', e.message ?? 'Could not upload the file.')
@@ -145,10 +173,20 @@ export default function LibraryScreen() {
 
   function handleDelete(trackId: number, title: string) {
     const doDelete = async () => {
-      if (isOffline) { setTracks(prev => prev.filter(t => t.id !== trackId)); return }
+      if (isOffline) {
+        setTracks(prev => prev.filter(t => t.id !== trackId))
+        setResults(prev => prev.filter(t => t.id !== trackId))
+        if (user) await removeTrackFromAllPlaylists(user.id, trackId)
+        return
+      }
       const ok = await deleteTrack(trackId)
-      if (ok) setTracks(prev => prev.filter(t => t.id !== trackId))
-      else nativeAlert('Error', 'Could not delete the track.')
+      if (ok) {
+        setTracks(prev => prev.filter(t => t.id !== trackId))
+        setResults(prev => prev.filter(t => t.id !== trackId))
+        if (user) await removeTrackFromAllPlaylists(user.id, trackId)
+      } else {
+        nativeAlert('Error', 'Could not delete the track.')
+      }
     }
     if (Platform.OS === 'web') {
       if (window.confirm(`Delete "${title}"?\nThis cannot be undone.`)) doDelete()
@@ -160,26 +198,72 @@ export default function LibraryScreen() {
     }
   }
 
-  // ── UC08: CSV Export ──────────────────────────────────────────────────
+  // ── UC08: CSV Export ─────────────────────────────────────────────────
+  // Mirrors the web "Export CSV": the backend builds the full file (with BPM, key,
+  // scale, energy, danceability from the Analysis table) — data the device doesn't
+  // hold — so we download that, then hand the file to the native share sheet.
+  // Falls back to a client-side CSV built from the visible library if the server
+  // export is unreachable.
+
+  function buildCsvFromTracks(): string {
+    const esc = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`
+    const header = ['Title', 'Artist', 'BPM', 'Key', 'Energy', 'Danceability']
+    const rows = results.map(t => [
+      esc(t.title), esc(t.artist), esc(t.bpm), esc(t.key), esc(''), esc(''),
+    ].join(','))
+    return [header.join(','), ...rows].join('\n')
+  }
+
+  // Web has no expo-file-system/expo-sharing — drive a real browser download
+  // instead (saves straight to the user's Downloads folder), mirroring the web app.
+  function downloadCsvWeb(csv: string, filename: string) {
+    // Leading UTF-8 BOM (﻿) so Excel renders accented characters correctly.
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' })
+    const url  = URL.createObjectURL(blob)
+    const a    = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    // Revoke on the next tick so the download has time to start.
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
 
   async function handleExport() {
-    if (!tracks.length) return
+    if (!user) return
     setIsExporting(true)
     try {
-      const header = 'title,artist,duration,bpm,key,upload_date'
-      const rows = tracks.map(t =>
-        [t.title, t.artist, t.duration, t.bpm, t.key, t.upload_date ?? '—']
-          .map(v => `"${String(v).replace(/"/g, '""')}"`)
-          .join(',')
-      )
-      const csv  = [header, ...rows].join('\n')
-      const fs   = FileSystem as any
-      const dir  = fs.documentDirectory ?? fs.cacheDirectory ?? ''
-      const path = `${dir}harmonia_library.csv`
-      await (FileSystem as any).writeAsStringAsync(path, csv, { encoding: 'utf8' })
-      await Sharing.shareAsync(path, { mimeType: 'text/csv', dialogTitle: 'Export Library CSV' })
+      // Prefer the rich server-generated file (matches the web download exactly);
+      // fall back to a client-side CSV built from the visible library.
+      let csv: string
+      try {
+        const resp = await fetch(`${BASE_URL}/api/tracks/user/${user.id}/export`)
+        if (!resp.ok) throw new Error(`Server returned ${resp.status}`)
+        csv = await resp.text()
+      } catch {
+        csv = buildCsvFromTracks()   // offline / server down → degrade gracefully
+      }
+
+      if (Platform.OS === 'web') {
+        downloadCsvWeb(csv, 'harmonia_export.csv')
+        return
+      }
+
+      // Native (iOS/Android): write to cache, then open the share sheet.
+      if (!(await Sharing.isAvailableAsync())) {
+        nativeAlert('Sharing Unavailable', 'Sharing is not available on this device.')
+        return
+      }
+      const path = `${FileSystem.cacheDirectory}harmonia_export.csv`
+      await FileSystem.writeAsStringAsync(path, csv, { encoding: FileSystem.EncodingType.UTF8 })
+      await Sharing.shareAsync(path, {
+        mimeType: 'text/csv',
+        dialogTitle: 'Export Library CSV',
+        UTI: 'public.comma-separated-values-text',
+      })
     } catch (e: any) {
-      Alert.alert('Export Failed', e.message)
+      nativeAlert('Export Failed', e.message ?? 'Could not export the library.')
     } finally {
       setIsExporting(false)
     }
@@ -198,15 +282,15 @@ export default function LibraryScreen() {
 
   // ── Render ────────────────────────────────────────────────────────────
 
-  const statusText = isLoading
+  const statusText = (isLoading || isSearching)
     ? 'Loading…'
     : isOffline
     ? '⚠  Offline — showing demo tracks'
-    : filtered.length === tracks.length
-    ? `${tracks.length} track${tracks.length !== 1 ? 's' : ''}`
-    : filtered.length === 0
+    : noFilters
+    ? `${results.length} track${results.length !== 1 ? 's' : ''}`
+    : results.length === 0
     ? 'No tracks found'
-    : `${filtered.length} result${filtered.length !== 1 ? 's' : ''}`
+    : `${results.length} result${results.length !== 1 ? 's' : ''}`
 
   return (
     <SafeAreaView style={s.safe}>
@@ -271,11 +355,11 @@ export default function LibraryScreen() {
         <Text style={s.status}>{statusText}</Text>
 
         {/* Track list */}
-        {isLoading
+        {(isLoading || isSearching) && results.length === 0
           ? <ActivityIndicator color={theme.ACCENT} style={{ marginTop: 40 }} />
           : (
             <FlatList
-              data={filtered}
+              data={results}
               keyExtractor={t => String(t.id)}
               contentContainerStyle={{ paddingBottom: 24 }}
               ListEmptyComponent={<Text style={s.empty}>No tracks found</Text>}

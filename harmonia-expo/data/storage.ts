@@ -47,3 +47,9 @@ export async function updatePlaylist(userId: number, updated: Playlist): Promise
     await savePlaylists(userId, list)
   }
 }
+
+export async function removeTrackFromAllPlaylists(userId: number, trackId: number): Promise<void> {
+  const list    = await loadPlaylists(userId)
+  const updated = list.map(p => ({ ...p, tracks: p.tracks.filter(id => id !== trackId) }))
+  await savePlaylists(userId, updated)
+}

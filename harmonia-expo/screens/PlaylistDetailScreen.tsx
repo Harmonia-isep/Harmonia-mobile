@@ -16,6 +16,13 @@ import { PlaylistsStackParamList } from '../types/navigation'
 
 type RouteP = RouteProp<PlaylistsStackParamList, 'PlaylistDetail'>
 
+// Mirrors the Library view's clean BPM formatting: a real number renders "128 BPM";
+// the '—' sentinel (set by normalizeTrack when no analysis exists yet) renders "— BPM"
+// instead of the bare "— BPM" string interpolation that leaked the placeholder.
+function fmtBpm(bpm: Track['bpm']): string {
+  return bpm !== '—' ? `${bpm} BPM` : '— BPM'
+}
+
 export default function PlaylistDetailScreen() {
   const route    = useRoute<RouteP>()
   const { tracks } = useTracks()
@@ -129,7 +136,7 @@ export default function PlaylistDetailScreen() {
                 renderItem={({ item }) => (
                   <TouchableOpacity style={s.sheetItem} onPress={() => addTrack(item.id)}>
                     <Text style={s.sheetItemTitle}>{item.title}</Text>
-                    <Text style={s.sheetItemSub}>{item.artist} · {item.bpm} BPM · {item.key}</Text>
+                    <Text style={s.sheetItemSub}>{item.artist} · {fmtBpm(item.bpm)} · {item.key || '—'}</Text>
                   </TouchableOpacity>
                 )}
                 ListEmptyComponent={
